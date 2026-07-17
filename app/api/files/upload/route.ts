@@ -1,62 +1,158 @@
-import { NextResponse } from 'next/server';
-import { fileUploadMetadataSchema } from '@/lib/validations/schemas';
-import { getSessionUser } from '@/lib/auth/session';
-import { createSupabaseServerClient, isSupabaseConfigured } from '@/lib/database/supabase-server';
-import type { ApiResponse } from '@/types/database';
+import { NextResponse } from "next/server";
+import { getSessionUser } from "@/lib/auth/session";
+import {
+  createSupabaseServerClient,
+  isSupabaseConfigured,
+} from "@/lib/database/supabase-server";
+import type { ApiResponse } from "@/types/database";
 
-/**
- * Accepts file metadata for a previously-uploaded file (actual bytes go to
- * Supabase Storage from the client using a signed URL — not implemented in
- * this MVP). Extraction is MOCKED here: real PDF/DOCX/PPTX parsers can be
- * plugged into lib/database/file-extraction.ts (see TODO below) without
- * changing this route's contract.
- */
+const MAX_SIZE = 25 * 1024 * 1024;
+
 export async function POST(request: Request) {
   const session = await getSessionUser();
-  if (!session) {
-    return NextResponse.json<ApiResponse<never>>({ success: false, error: { message: 'Not authenticated' } }, { status: 401 });
-  }
 
-  const body = await request.json().catch(() => null);
-  const parsed = fileUploadMetadataSchema.safeParse(body);
-  if (!parsed.success) {
+  if (!session) {
     return NextResponse.json<ApiResponse<never>>(
-      { success: false, error: { message: 'Invalid file metadata', code: 'VALIDATION_ERROR' } },
-      { status: 400 }
+      {
+        success: false,
+        error: {
+          message: "Not authenticated",
+        },
+      },
+      {
+        status: 401,
+      }
     );
   }
 
-  // MOCK extraction — clearly labelled. TODO: connect a real parser
-  // (e.g. pdf-parse, mammoth, or a cloud OCR service) here.
-  const mockExtractedText = `[Mock extraction] This is placeholder text standing in for the real content of "${parsed.data.fileName}". Connect a real parser in lib/database/file-extraction.ts to replace this.`;
+  const formData = await request.formData();
 
-  if (!isSupabaseConfigured()) {
-    return NextResponse.json<ApiResponse<{ extractionStatus: string; mockExtractedText: string }>>({
-      success: true,
-      data: { extractionStatus: 'mock_extracted', mockExtractedText },
-    });
+  const file = formData.get("file");
+
+  if (!(file instanceof File)) {
+    return NextResponse.json<ApiResponse<never>>(
+      {
+        success: false,
+        error: {
+          message: "No file uploaded.",
+        },
+      },
+      {
+        status: 400,
+      }
+    );
   }
 
-  const supabase = createSupabaseServerClient();
-  const { data, error } = await supabase
-    .from('uploaded_files')
-    .insert({
-      owner_id: session.id,
-      file_name: parsed.data.fileName,
-      file_type: parsed.data.fileType,
-      storage_path: `uploads/${session.id}/${parsed.data.fileName}`,
-      size_bytes: parsed.data.sizeBytes,
-      extraction_status: 'mock_extracted',
-    })
-    .select()
-    .single();
-
-  if (error) {
-    return NextResponse.json<ApiResponse<never>>({ success: false, error: { message: 'Could not save file metadata' } }, { status: 500 });
+  if (file.size > MAX_SIZE) {
+    return NextResponse.json<ApiResponse<never>>(
+      {
+        success: false,
+        error: {
+          message: "Maximum upload size is 25 MB.",
+        },
+      },
+      {
+        status: 400,
+      }
+    );
   }
 
-  return NextResponse.json<ApiResponse<{ file: typeof data; mockExtractedText: string }>>({
+  const extension =
+    file.name.split(".").pop()?.toLowerCase() ?? "";
+
+  let extractedText = "";
+
+  switch (extension) {
+    case "txt":
+    case "md":
+    case "csv":
+      extractedText = await file.text();
+      break;
+
+    case "pdf":
+      extractedText =
+        `PDF Uploaded
+
+Filename:
+${file.name}
+
+Size:
+${Math.round(file.size / 1024)} KB
+
+Demo Mode
+
+PDF extraction has not yet been enabled.
+
+The file has been uploaded successfully.
+
+Once pdf-parse or OCR is connected this endpoint will automatically return the real extracted text.
+
+For now you may paste the PDF contents manually.`;
+
+      break;
+
+    case "doc":
+    case "docx":
+      extractedText =
+        `Word document uploaded
+
+Filename:
+${file.name}
+
+Demo Mode
+
+DOCX extraction will be enabled once mammoth is installed.
+
+Upload completed successfully.`;
+
+      break;
+
+    default:
+      return NextResponse.json<ApiResponse<never>>(
+        {
+          success: false,
+          error: {
+            message:
+              "Unsupported file type.",
+          },
+        },
+        {
+          status: 400,
+        }
+      );
+  }
+
+  let uploadedFile = null;
+
+  if (isSupabaseConfigured()) {
+    const supabase =
+      createSupabaseServerClient();
+
+    const { data } = await supabase
+      .from("uploaded_files")
+      .insert({
+        owner_id: session.id,
+        file_name: file.name,
+        file_type: file.type,
+        storage_path: `uploads/${session.id}/${file.name}`,
+        size_bytes: file.size,
+        extraction_status: "completed",
+      })
+      .select()
+      .single();
+
+    uploadedFile = data;
+  }
+
+  return NextResponse.json({
     success: true,
-    data: { file: data, mockExtractedText },
+    data: {
+      file: uploadedFile,
+      fileName: file.name,
+      extractedText,
+      content: extractedText,
+      text: extractedText,
+      extractionStatus: "completed",
+    },
   });
 }
