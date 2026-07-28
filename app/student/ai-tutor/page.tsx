@@ -25,7 +25,22 @@ interface ChatMessage {
   content: string;
   isDemoResponse?: boolean;
   provider?: string;
+  model?: string;
   error?: boolean;
+}
+
+interface TutorApiResponse {
+  success?: boolean;
+  data?: {
+    content?: string;
+    isDemoResponse?: boolean;
+    provider?: string;
+    model?: string;
+  };
+  error?: {
+    message?: string;
+    code?: string;
+  };
 }
 
 const SUGGESTED_PROMPTS = [
@@ -42,7 +57,10 @@ const QUICK_MODES: Array<{
   { mode: "simplify", label: "Simplify" },
   { mode: "example", label: "Give example" },
   { mode: "eli10", label: "Explain like I’m 10" },
-  { mode: "practice_questions", label: "Practice questions" },
+  {
+    mode: "practice_questions",
+    label: "Practice questions",
+  },
   { mode: "summarise", label: "Summarise" },
 ];
 
@@ -60,9 +78,11 @@ export default function AiTutorPage() {
 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(
-    null
-  );
+
+  const [copiedMessageId, setCopiedMessageId] = useState<
+    string | null
+  >(null);
+
   const [feedback, setFeedback] = useState<
     Record<string, "up" | "down">
   >({});
@@ -80,8 +100,8 @@ export default function AiTutorPage() {
     assistantId: string,
     updates: Partial<ChatMessage>
   ) {
-    setMessages((current) =>
-      current.map((message) =>
+    setMessages((currentMessages) =>
+      currentMessages.map((message) =>
         message.id === assistantId
           ? {
               ...message,
@@ -103,21 +123,22 @@ export default function AiTutorPage() {
     }
 
     const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: createId(),
       role: "user",
       content: cleanText,
     };
 
-    const assistantId = crypto.randomUUID();
+    const assistantId = createId();
 
-    setMessages((current) => [
-      ...current,
+    setMessages((currentMessages) => [
+      ...currentMessages,
       userMessage,
       {
         id: assistantId,
         role: "assistant",
         content: "",
         isDemoResponse: false,
+        provider: "pending",
       },
     ]);
 
@@ -129,7 +150,7 @@ export default function AiTutorPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Accept: "text/plain",
+          Accept: "application/json, text/plain",
         },
         body: JSON.stringify({
           message: cleanText,
@@ -138,82 +159,38 @@ export default function AiTutorPage() {
         }),
       });
 
-      if (!response.ok) {
-        const responseText = await response.text();
-
-        let errorMessage = `Tutor request failed (${response.status})`;
-
-        try {
-          const parsedError = JSON.parse(responseText) as {
-            error?: {
-              message?: string;
-            };
-          };
-
-          errorMessage =
-            parsedError.error?.message ?? errorMessage;
-        } catch {
-          if (responseText.trim()) {
-            errorMessage = responseText;
-          }
-        }
-
-        throw new Error(errorMessage);
-      }
-
-      const isDemoResponse =
+      const headerDemoStatus =
         response.headers.get("X-AI-Demo") === "true";
 
-      const provider =
+      const headerProvider =
         response.headers.get("X-AI-Provider") ??
-        (isDemoResponse ? "edumind-demo" : "live-ai");
+        (headerDemoStatus ? "edumind-demo" : "live-ai");
 
-      if (!response.body) {
-        throw new Error(
-          "The tutor returned no response stream."
-        );
-      }
+      const contentType =
+        response.headers.get("content-type")?.toLowerCase() ??
+        "";
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      let content = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        content += decoder.decode(value, {
-          stream: true,
+      if (contentType.includes("application/json")) {
+        await processJsonResponse({
+          response,
+          assistantId,
+          headerDemoStatus,
+          headerProvider,
         });
 
-        updateAssistantMessage(assistantId, {
-          content,
-          isDemoResponse,
-          provider,
-        });
+        return;
       }
 
-      content += decoder.decode();
-
-      if (!content.trim()) {
-        throw new Error(
-          "The AI tutor returned an empty answer."
-        );
-      }
-
-      updateAssistantMessage(assistantId, {
-        content: content.trim(),
-        isDemoResponse,
-        provider,
+      await processTextOrStreamResponse({
+        response,
+        assistantId,
+        headerDemoStatus,
+        headerProvider,
       });
-    } catch (error) {
+    } catch (requestError) {
       const errorMessage =
-        error instanceof Error
-          ? error.message
+        requestError instanceof Error
+          ? requestError.message
           : "Something went wrong while contacting the tutor.";
 
       updateAssistantMessage(assistantId, {
@@ -224,10 +201,160 @@ ${errorMessage}
 Please try again with a shorter question.`,
         error: true,
         isDemoResponse: false,
+        provider: "request-error",
       });
     } finally {
       setLoading(false);
     }
+  }
+
+  async function processJsonResponse({
+    response,
+    assistantId,
+    headerDemoStatus,
+    headerProvider,
+  }: {
+    response: Response;
+    assistantId: string;
+    headerDemoStatus: boolean;
+    headerProvider: string;
+  }) {
+    const rawResponse = await response.text();
+
+    const parsedResponse = parseTutorJson(rawResponse);
+
+    if (!response.ok || parsedResponse?.success === false) {
+      throw new Error(
+        parsedResponse?.error?.message ??
+          `Tutor request failed (${response.status}).`
+      );
+    }
+
+    const answer =
+      parsedResponse?.data?.content?.trim() ?? "";
+
+    if (!answer) {
+      throw new Error(
+        "The AI Tutor returned an empty response."
+      );
+    }
+
+    updateAssistantMessage(assistantId, {
+      content: answer,
+      isDemoResponse:
+        parsedResponse?.data?.isDemoResponse ??
+        headerDemoStatus,
+      provider:
+        parsedResponse?.data?.provider ??
+        headerProvider,
+      model: parsedResponse?.data?.model,
+      error: false,
+    });
+  }
+
+  async function processTextOrStreamResponse({
+    response,
+    assistantId,
+    headerDemoStatus,
+    headerProvider,
+  }: {
+    response: Response;
+    assistantId: string;
+    headerDemoStatus: boolean;
+    headerProvider: string;
+  }) {
+    if (!response.ok) {
+      const responseText = await response.text();
+
+      const parsedError = parseTutorJson(responseText);
+
+      throw new Error(
+        parsedError?.error?.message ??
+          cleanServerError(responseText) ??
+          `Tutor request failed (${response.status}).`
+      );
+    }
+
+    if (!response.body) {
+      const responseText = await response.text();
+
+      const finalResponse = extractTutorContent(responseText);
+
+      if (!finalResponse.content.trim()) {
+        throw new Error(
+          "The AI Tutor returned an empty response."
+        );
+      }
+
+      updateAssistantMessage(assistantId, {
+        content: finalResponse.content,
+        isDemoResponse:
+          finalResponse.isDemoResponse ??
+          headerDemoStatus,
+        provider:
+          finalResponse.provider ??
+          headerProvider,
+        model: finalResponse.model,
+        error: false,
+      });
+
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    let rawContent = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      rawContent += decoder.decode(value, {
+        stream: true,
+      });
+
+      const streamedResponse =
+        extractTutorContent(rawContent);
+
+      updateAssistantMessage(assistantId, {
+        content: streamedResponse.content,
+        isDemoResponse:
+          streamedResponse.isDemoResponse ??
+          headerDemoStatus,
+        provider:
+          streamedResponse.provider ??
+          headerProvider,
+        model: streamedResponse.model,
+        error: false,
+      });
+    }
+
+    rawContent += decoder.decode();
+
+    const finalResponse =
+      extractTutorContent(rawContent);
+
+    if (!finalResponse.content.trim()) {
+      throw new Error(
+        "The AI Tutor returned an empty answer."
+      );
+    }
+
+    updateAssistantMessage(assistantId, {
+      content: finalResponse.content.trim(),
+      isDemoResponse:
+        finalResponse.isDemoResponse ??
+        headerDemoStatus,
+      provider:
+        finalResponse.provider ??
+        headerProvider,
+      model: finalResponse.model,
+      error: false,
+    });
   }
 
   function regenerate() {
@@ -240,18 +367,19 @@ Please try again with a shorter question.`,
       .find((message) => message.role === "user");
 
     if (lastUserMessage) {
-      sendMessage(lastUserMessage.content);
+      void sendMessage(lastUserMessage.content);
     }
   }
 
   async function copyAnswer(message: ChatMessage) {
     try {
       await navigator.clipboard.writeText(message.content);
+
       setCopiedMessageId(message.id);
 
       window.setTimeout(() => {
-        setCopiedMessageId((current) =>
-          current === message.id ? null : current
+        setCopiedMessageId((currentId) =>
+          currentId === message.id ? null : currentId
         );
       }, 1800);
     } catch {
@@ -261,17 +389,12 @@ Please try again with a shorter question.`,
 
   function saveAsNote(message: ChatMessage) {
     try {
-      const existingNotes = JSON.parse(
-        localStorage.getItem("edumind-saved-notes") ?? "[]"
-      ) as Array<{
-        id: string;
-        title: string;
-        content: string;
-        createdAt: string;
-      }>;
+      const existingNotes = safeParseSavedNotes(
+        localStorage.getItem("edumind-saved-notes")
+      );
 
       existingNotes.unshift({
-        id: crypto.randomUUID(),
+        id: createId(),
         title: createNoteTitle(message.content),
         content: message.content,
         createdAt: new Date().toISOString(),
@@ -282,9 +405,13 @@ Please try again with a shorter question.`,
         JSON.stringify(existingNotes)
       );
 
-      window.alert("Answer saved to your EduMind notes.");
+      window.alert(
+        "Answer saved to your EduMind notes."
+      );
     } catch {
-      window.alert("The answer could not be saved.");
+      window.alert(
+        "The answer could not be saved."
+      );
     }
   }
 
@@ -322,8 +449,8 @@ Please try again with a shorter question.`,
     messageId: string,
     value: "up" | "down"
   ) {
-    setFeedback((current) => ({
-      ...current,
+    setFeedback((currentFeedback) => ({
+      ...currentFeedback,
       [messageId]: value,
     }));
   }
@@ -410,7 +537,9 @@ Please try again with a shorter question.`,
                           ? "Copied"
                           : "Copy answer"
                       }
-                      onClick={() => copyAnswer(message)}
+                      onClick={() => {
+                        void copyAnswer(message);
+                      }}
                       active={
                         copiedMessageId === message.id
                       }
@@ -485,7 +614,9 @@ Please try again with a shorter question.`,
                 key={prompt}
                 type="button"
                 disabled={loading}
-                onClick={() => sendMessage(prompt)}
+                onClick={() => {
+                  void sendMessage(prompt);
+                }}
                 className="rounded-full border border-navy-200 px-3 py-1.5 text-xs text-navy-600 transition hover:border-purple-300 hover:bg-purple-50 hover:text-purple-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-navy-700 dark:text-lavender-300 dark:hover:bg-navy-800"
               >
                 {prompt}
@@ -516,7 +647,7 @@ Please try again with a shorter question.`,
                     );
 
                   if (lastUserMessage) {
-                    sendMessage(
+                    void sendMessage(
                       lastUserMessage.content,
                       quickMode.mode
                     );
@@ -534,7 +665,7 @@ Please try again with a shorter question.`,
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          sendMessage(input);
+          void sendMessage(input);
         }}
         className="flex items-end gap-2"
       >
@@ -550,7 +681,7 @@ Please try again with a shorter question.`,
               !event.shiftKey
             ) {
               event.preventDefault();
-              sendMessage(input);
+              void sendMessage(input);
             }
           }}
           rows={1}
@@ -610,6 +741,12 @@ function AssistantHeader({
           Live AI
         </span>
       ) : null}
+
+      {message.model && message.id !== "welcome" && (
+        <span className="text-[10px] text-navy-400 dark:text-lavender-500">
+          {message.model}
+        </span>
+      )}
     </div>
   );
 }
@@ -652,6 +789,17 @@ function FormattedTutorContent({
           );
         }
 
+        if (trimmedLine.startsWith("# ")) {
+          return (
+            <h2
+              key={index}
+              className="pt-1 text-lg font-semibold text-navy-900 dark:text-lavender-50"
+            >
+              {trimmedLine.replace(/^#\s+/, "")}
+            </h2>
+          );
+        }
+
         if (/^[-*]\s+/.test(trimmedLine)) {
           return (
             <div
@@ -659,6 +807,7 @@ function FormattedTutorContent({
               className="flex items-start gap-2"
             >
               <span className="mt-[10px] h-1.5 w-1.5 shrink-0 rounded-full bg-purple-500" />
+
               <span>
                 {renderInlineFormatting(
                   trimmedLine.replace(/^[-*]\s+/, "")
@@ -680,6 +829,7 @@ function FormattedTutorContent({
               <span className="min-w-5 font-semibold text-purple-600 dark:text-purple-300">
                 {number}.
               </span>
+
               <span>
                 {renderInlineFormatting(
                   trimmedLine.replace(/^\d+\.\s+/, "")
@@ -734,6 +884,85 @@ function renderInlineFormatting(text: string) {
   });
 }
 
+function parseTutorJson(
+  rawResponse: string
+): TutorApiResponse | null {
+  try {
+    const parsed: unknown = JSON.parse(rawResponse);
+
+    if (!isRecord(parsed)) {
+      return null;
+    }
+
+    return parsed as TutorApiResponse;
+  } catch {
+    return null;
+  }
+}
+
+function extractTutorContent(rawResponse: string): {
+  content: string;
+  isDemoResponse?: boolean;
+  provider?: string;
+  model?: string;
+} {
+  const trimmedResponse = rawResponse.trim();
+
+  if (!trimmedResponse) {
+    return {
+      content: "",
+    };
+  }
+
+  const parsedResponse =
+    parseTutorJson(trimmedResponse);
+
+  if (
+    parsedResponse?.success === true &&
+    parsedResponse.data?.content
+  ) {
+    return {
+      content: parsedResponse.data.content.trim(),
+      isDemoResponse:
+        parsedResponse.data.isDemoResponse,
+      provider: parsedResponse.data.provider,
+      model: parsedResponse.data.model,
+    };
+  }
+
+  if (
+    parsedResponse?.success === false &&
+    parsedResponse.error?.message
+  ) {
+    return {
+      content: parsedResponse.error.message,
+    };
+  }
+
+  return {
+    content: rawResponse,
+  };
+}
+
+function cleanServerError(
+  rawResponse: string
+): string | null {
+  const trimmedResponse = rawResponse.trim();
+
+  if (!trimmedResponse) {
+    return null;
+  }
+
+  if (
+    trimmedResponse.startsWith("<!DOCTYPE") ||
+    trimmedResponse.startsWith("<html")
+  ) {
+    return "The server returned an unexpected HTML error page.";
+  }
+
+  return trimmedResponse.slice(0, 500);
+}
+
 function createNoteTitle(content: string): string {
   const firstMeaningfulLine = content
     .split("\n")
@@ -748,6 +977,68 @@ function createNoteTitle(content: string): string {
   return (
     firstMeaningfulLine?.slice(0, 70) ??
     "AI Tutor Note"
+  );
+}
+
+function safeParseSavedNotes(
+  storedValue: string | null
+): Array<{
+  id: string;
+  title: string;
+  content: string;
+  createdAt: string;
+}> {
+  if (!storedValue) {
+    return [];
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(storedValue);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(
+      (
+        value
+      ): value is {
+        id: string;
+        title: string;
+        content: string;
+        createdAt: string;
+      } =>
+        isRecord(value) &&
+        typeof value.id === "string" &&
+        typeof value.title === "string" &&
+        typeof value.content === "string" &&
+        typeof value.createdAt === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function createId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `message-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
+function isRecord(
+  value: unknown
+): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
   );
 }
 
