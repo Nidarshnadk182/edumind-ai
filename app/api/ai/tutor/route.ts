@@ -1,98 +1,35 @@
 import { NextResponse } from "next/server";
-
+import { aiTutorMessageSchema } from "@/lib/validations/schemas";
 import { getSessionUser } from "@/lib/auth/session";
 import { checkRateLimit } from "@/lib/ai/rate-limit";
 import { getAiProvider } from "@/lib/ai/provider";
-import { aiTutorMessageSchema } from "@/lib/validations/schemas";
-
 import type { ApiResponse } from "@/types/database";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
 const MODE_INSTRUCTIONS: Record<string, string> = {
-  explain: `
-Explain the concept clearly.
-Begin with a direct definition, then explain how it works.
-Use a short example when useful.
-`,
-
-  simplify: `
-Explain the concept in simple language.
-Use short sentences and avoid unnecessary technical terminology.
-Define any technical term that must be used.
-`,
-
-  example: `
-Focus on one clear practical or numerical example.
-Show the steps and explain what each step means.
-`,
-
-  eli10: `
-Explain the concept as if the student were 10 years old.
-Use an everyday analogy before connecting it to the academic meaning.
-`,
-
-  beginner: `
-Answer at beginner level.
-Define all important terms and avoid assuming prior knowledge.
-`,
-
-  intermediate: `
-Answer at intermediate level.
-Assume the student understands the basic terminology.
-Explain application and interpretation.
-`,
-
-  advanced: `
-Answer at advanced level.
-Use precise terminology, assumptions, formulas and limitations where relevant.
-`,
-
-  practice_questions: `
-Generate exactly three useful practice questions.
-
-For every question:
-1. Show the question.
-2. Give the correct answer.
-3. Add a one-sentence explanation.
-
-Base the questions on the concept requested by the student.
-`,
-
-  summarise: `
-Summarise the concept in two or three concise paragraphs.
-Include the definition, main mechanism and one key implication.
-`,
-
-  follow_up: `
-Give a short explanation and then ask one question that checks whether the student understood the concept.
-`,
+  explain: "Explain the concept clearly and concisely.",
+  simplify:
+    "Simplify the explanation using plain language and short sentences.",
+  example: "Give one concrete worked example.",
+  eli10:
+    "Explain this as if the student were 10 years old using an everyday analogy.",
+  beginner: "Answer at beginner level. Define technical terms.",
+  intermediate:
+    "Answer at intermediate level, assuming foundational knowledge.",
+  advanced:
+    "Answer at advanced level using precise technical language.",
+  practice_questions:
+    "Generate three short practice questions with answers.",
+  summarise: "Summarise the answer in two or three sentences.",
+  follow_up: "Ask one follow-up question to check understanding.",
 };
 
-const SYSTEM_PROMPT = `
-You are EduMind AI Tutor, a patient and accurate academic learning assistant.
+const SYSTEM_PROMPT = `You are EduMind AI Tutor, a patient academic assistant.
 
-Your job is to help students understand concepts instead of merely giving final answers.
-
-General rules:
-- Answer the exact question asked.
-- Use accurate academic language.
-- Match the requested difficulty level and mode.
-- Use descriptive headings when the answer has multiple sections.
-- Prefer short paragraphs and clear bullet points.
-- Explain formulas by defining every variable.
-- For calculations, show the working clearly.
-- Distinguish facts, assumptions and interpretation.
-- Do not invent quotations, references, page numbers, research findings or citations.
-- Do not claim that information came from uploaded material unless source material was actually provided.
-- When uncertain, state the limitation clearly.
-- Keep a normal explanation under 450 words.
-- Practice-question responses may be longer.
-- Use Markdown formatting where it improves readability.
-- Do not wrap the answer in JSON.
-- Return only the educational response.
-`.trim();
+Give accurate, focused educational answers appropriate to the student's level.
+Use headings, short paragraphs and examples when useful.
+Do not invent facts, references, page numbers or citations.
+If source material is supplied, distinguish source-grounded content from general model knowledge.
+Keep normal tutor answers under 350 words unless detailed notes are requested.`;
 
 interface DemoTopic {
   keywords: string[];
@@ -100,15 +37,7 @@ interface DemoTopic {
   explanation: string;
   simpleExplanation: string;
   example: string;
-  practiceQuestions: string;
-}
-
-interface TutorSuccessData {
-  content: string;
-  isDemoResponse: boolean;
-  model: string;
-  provider: string;
-  providerStatus?: string;
+  questions: string;
 }
 
 const DEMO_TOPICS: DemoTopic[] = [
@@ -118,125 +47,85 @@ const DEMO_TOPICS: DemoTopic[] = [
       "heteroscedasticity",
       "white test",
       "breusch pagan",
-      "breusch-pagan",
     ],
-
     title: "Heteroskedasticity",
+    explanation: `Heteroskedasticity occurs when the variance of the regression error term is not constant across observations.
 
-    explanation: `Heteroskedasticity occurs when the variance of a regression model's error term is not constant across observations.
+For example, errors in predicting expenditure may be small for low-income households but much larger for high-income households.
 
 ### Why it matters
 
-Ordinary Least Squares coefficient estimates may remain unbiased, but their estimated standard errors can become unreliable. This can make confidence intervals, t-tests and F-tests misleading.
+Ordinary Least Squares coefficient estimates may remain unbiased, but their standard errors can become unreliable. This can make t-tests, F-tests and confidence intervals misleading.
 
 ### Detection
 
 Common methods include:
 
-- Examining residual plots
+- Residual plots
 - Breusch–Pagan test
 - White test
 
 ### Remedies
 
-Possible remedies include:
+Researchers may use heteroskedasticity-robust standard errors, transform variables, or reconsider the model specification.`,
+    simpleExplanation: `Heteroskedasticity means the prediction errors in a regression do not have the same spread everywhere.
 
-- Heteroskedasticity-robust standard errors
-- Transforming relevant variables
-- Reconsidering the model specification
-- Using an appropriate weighted estimation method`,
+Imagine throwing darts at a target. At first, the darts are close together, but later they become widely scattered. The changing spread represents heteroskedasticity.
 
-    simpleExplanation: `Heteroskedasticity means that a regression model's prediction errors do not have the same spread everywhere.
+It mainly makes the regression's standard errors and hypothesis tests less reliable.`,
+    example: `Suppose a regression predicts household expenditure from income.
 
-Imagine throwing darts. For some observations, the darts land close together. For other observations, they spread widely. That changing spread represents heteroskedasticity.
+For lower-income households, actual expenditure may differ from predicted expenditure by only ₹1,000–₹2,000. For higher-income households, the difference may be ₹20,000 or more.
 
-It mainly makes the model's standard errors and hypothesis tests less reliable.`,
+Because the size of the errors increases with income, the model may have heteroskedasticity.`,
+    questions: `### Practice questions
 
-    example: `Suppose a model predicts household expenditure from income.
+1. What is heteroskedasticity?
+   **Answer:** It is a situation where the variance of regression errors is not constant.
 
-For low-income households, actual expenditure may differ from predicted expenditure by only $100 to $200. For high-income households, the difference may be $2,000 or more.
+2. Does heteroskedasticity necessarily make OLS coefficients biased?
+   **Answer:** No. The coefficients may remain unbiased, but the standard errors can be unreliable.
 
-Because the error spread increases with income, the regression may have heteroskedasticity.`,
-
-    practiceQuestions: `### Practice questions
-
-1. **What is heteroskedasticity?**  
-   **Answer:** It is a situation in which the variance of regression errors is not constant.  
-   **Explanation:** The error spread changes across observations.
-
-2. **Does heteroskedasticity necessarily make OLS coefficients biased?**  
-   **Answer:** No.  
-   **Explanation:** OLS coefficients may remain unbiased, but their standard errors can become unreliable.
-
-3. **Name two tests for heteroskedasticity.**  
-   **Answer:** The Breusch–Pagan test and White test.  
-   **Explanation:** Both examine whether error variance changes systematically.`,
+3. Name two tests for heteroskedasticity.
+   **Answer:** The Breusch–Pagan test and White test.`,
   },
-
   {
-    keywords: [
-      "option greek",
-      "option greeks",
-      "delta",
-      "gamma",
-      "theta",
-      "vega",
-      "rho",
-    ],
-
+    keywords: ["option greek", "delta", "gamma", "theta", "vega", "rho"],
     title: "Option Greeks",
+    explanation: `Option Greeks measure how the price of an option responds to changes in different factors.
 
-    explanation: `Option Greeks measure how an option's value responds to changes in important market variables.
-
-- **Delta:** Approximate change in option price for a one-unit change in the underlying asset price.
+- **Delta:** Change in option price for a change in the underlying asset price.
 - **Gamma:** Change in delta when the underlying price changes.
-- **Theta:** Change in option value caused by the passage of time.
-- **Vega:** Sensitivity to changes in expected volatility.
+- **Theta:** Loss in option value as time passes.
+- **Vega:** Sensitivity to changes in volatility.
 - **Rho:** Sensitivity to changes in interest rates.
 
-Traders use the Greeks to measure and manage the risks of an options position or portfolio.`,
+Traders use the Greeks to understand and manage the risks of an options portfolio.`,
+    simpleExplanation: `Option Greeks are like different sensors showing what can change an option's price.
 
-    simpleExplanation: `Option Greeks are like sensors showing what can change an option's price.
-
-- Delta tracks the asset price.
-- Gamma tracks changes in delta.
-- Theta tracks time decay.
-- Vega tracks volatility.
-- Rho tracks interest rates.`,
-
+Delta measures movement in the share price, theta measures the passage of time, vega measures volatility and rho measures interest rates.`,
     example: `Suppose a call option has a delta of 0.60.
 
-If the underlying asset price rises by $10, the option price is expected to rise by approximately:
+If the underlying share price increases by ₹10, the option price is expected to increase by approximately:
 
-**0.60 × $10 = $6**
+0.60 × ₹10 = ₹6
 
-This is only an approximation because delta itself may change as the underlying price changes.`,
+This is an approximation because delta itself can change.`,
+    questions: `### Practice questions
 
-    practiceQuestions: `### Practice questions
+1. Which Greek measures time decay?
+   **Answer:** Theta.
 
-1. **Which Greek measures time decay?**  
-   **Answer:** Theta.  
-   **Explanation:** Theta estimates how option value changes as time passes.
+2. Which Greek measures sensitivity to volatility?
+   **Answer:** Vega.
 
-2. **Which Greek measures sensitivity to volatility?**  
-   **Answer:** Vega.  
-   **Explanation:** Vega reflects the effect of changes in expected volatility.
-
-3. **What does delta measure?**  
-   **Answer:** The approximate change in option price for a one-unit change in the underlying price.  
-   **Explanation:** Delta captures directional exposure.`,
+3. What does delta measure?
+   **Answer:** The approximate change in option price for a one-unit change in the underlying price.`,
   },
-
   {
-    keywords: [
-      "put call parity",
-      "put-call parity",
-      "put call",
-    ],
-
+    keywords: ["put call parity", "put-call parity"],
     title: "Put–Call Parity",
-
-    explanation: `Put–call parity explains the relationship between European call options, European put options, the underlying asset and a risk-free investment.
+    explanation: `Put–call parity describes the relationship between European call options, European put options, the underlying asset and a risk-free bond.
 
 For a non-dividend-paying stock:
 
@@ -244,166 +133,115 @@ For a non-dividend-paying stock:
 
 Where:
 
-- **C** = call option price
-- **P** = put option price
-- **S₀** = current stock price
-- **PV(K)** = present value of the exercise price
+- C = call option price
+- P = put option price
+- S₀ = current stock price
+- PV(K) = present value of the exercise price
 
-Both sides create the same payoff at expiration. Therefore, they should have the same value today. If the relationship does not hold, an arbitrage opportunity may exist.`,
-
+If the relationship does not hold, an arbitrage opportunity may exist.`,
     simpleExplanation: `Put–call parity says that two portfolios producing the same future payoff should have the same value today.
 
-A call option plus enough safe money to pay the strike price should equal a put option plus the underlying stock.`,
-
+A call plus enough safe money to pay the exercise price should equal a put plus the stock.`,
     example: `Suppose:
 
-- Current stock price = $100
-- Present value of strike price = $92
-- Call price = $15
+- Stock price = ₹100
+- Present value of strike price = ₹92
+- Call price = ₹15
 
-Using:
+Using C + PV(K) = P + S₀:
 
-**C + PV(K) = P + S₀**
-
-Substitute the values:
-
-**15 + 92 = P + 100**
+15 + 92 = P + 100
 
 Therefore:
 
-**P = $7**`,
+P = ₹7`,
+    questions: `### Practice questions
 
-    practiceQuestions: `### Practice questions
+1. Write the put–call parity equation.
+   **Answer:** C + PV(K) = P + S₀.
 
-1. **Write the standard put–call parity equation.**  
-   **Answer:** C + PV(K) = P + S₀.  
-   **Explanation:** The equation equates two portfolios with identical expiration payoffs.
+2. To which options does standard put–call parity apply?
+   **Answer:** European call and put options with the same strike and maturity.
 
-2. **Which options does standard put–call parity apply to?**  
-   **Answer:** European call and put options with the same strike price and expiration date.  
-   **Explanation:** The matching terms are necessary for equivalent payoffs.
-
-3. **What may happen if put–call parity does not hold?**  
-   **Answer:** An arbitrage opportunity may arise.  
-   **Explanation:** Traders may construct offsetting positions that generate a risk-free gain.`,
+3. What may happen if parity does not hold?
+   **Answer:** An arbitrage opportunity may arise.`,
   },
-
   {
-    keywords: [
-      "wacc",
-      "weighted average cost of capital",
-      "cost of capital",
-    ],
-
+    keywords: ["wacc", "weighted average cost of capital"],
     title: "Weighted Average Cost of Capital",
+    explanation: `WACC is the average return a company must provide to all its capital providers, weighted by the proportion of debt and equity in its capital structure.
 
-    explanation: `WACC is the average required return of a company's debt and equity providers, weighted according to their proportions in the firm's capital structure.
+The general formula is:
 
-The standard formula is:
-
-**WACC = (E/V × Kₑ) + (D/V × K𝒹 × (1 − T))**
+**WACC = (E/V × Ke) + (D/V × Kd × (1 − T))**
 
 Where:
 
-- **E** = market value of equity
-- **D** = market value of debt
-- **V** = E + D
-- **Kₑ** = cost of equity
-- **K𝒹** = cost of debt
-- **T** = corporate tax rate
+- E = market value of equity
+- D = market value of debt
+- V = E + D
+- Ke = cost of equity
+- Kd = cost of debt
+- T = corporate tax rate
 
-WACC is often used as a discount rate when a project's risk is similar to the company's existing operating risk.`,
+It is often used as the discount rate for projects having risk similar to the firm's existing operations.`,
+    simpleExplanation: `A company usually obtains money from both shareholders and lenders.
 
-    simpleExplanation: `A company commonly receives money from shareholders and lenders.
-
-Shareholders expect a return, while lenders expect interest. WACC combines these financing costs into one overall percentage.`,
-
-    example: `Suppose a company is financed by:
+WACC combines the return expected by shareholders and the interest expected by lenders into one overall percentage.`,
+    example: `Suppose a company has:
 
 - 60% equity with a cost of 12%
 - 40% debt with an after-tax cost of 6%
 
-Then:
+WACC = (0.60 × 12%) + (0.40 × 6%)
 
-**WACC = (0.60 × 12%) + (0.40 × 6%)**
+WACC = 7.2% + 2.4% = **9.6%**`,
+    questions: `### Practice questions
 
-**WACC = 7.2% + 2.4%**
+1. What does WACC represent?
+   **Answer:** The weighted average return required by a company's debt and equity providers.
 
-**WACC = 9.6%**`,
+2. Why is debt adjusted for tax?
+   **Answer:** Interest expense is generally tax-deductible, creating a tax shield.
 
-    practiceQuestions: `### Practice questions
-
-1. **What does WACC represent?**  
-   **Answer:** The weighted average required return of a company's debt and equity providers.  
-   **Explanation:** It reflects the combined financing cost.
-
-2. **Why is the cost of debt adjusted for tax?**  
-   **Answer:** Because interest expense may create a tax shield.  
-   **Explanation:** The effective after-tax cost of debt can be lower than its stated interest rate.
-
-3. **When can WACC be used as a project discount rate?**  
-   **Answer:** When the project's risk is similar to the firm's existing operating risk.  
-   **Explanation:** A materially different-risk project should use a different required return.`,
+3. When may WACC be used as a project discount rate?
+   **Answer:** When the project's risk is similar to the firm's existing operations.`,
   },
-
   {
-    keywords: [
-      "forward contract",
-      "futures contract",
-      "forward and futures",
-      "forwards and futures",
-      "difference between forward",
-    ],
-
+    keywords: ["forward contract", "futures contract", "forward and futures"],
     title: "Forward and Futures Contracts",
-
     explanation: `A forward contract is a private agreement between two parties to buy or sell an asset at a specified price on a future date.
 
-A futures contract has a similar economic purpose but is standardised and traded through an organised exchange.
+A futures contract performs a similar function but is standardised and traded on an organised exchange.
 
-### Major differences
+### Main differences
 
 - Forwards are customised; futures are standardised.
-- Forwards generally have greater counterparty risk.
+- Forwards have greater counterparty risk.
 - Futures are marked to market daily.
 - Futures normally require margin deposits.
-- Forward gains or losses are usually settled at maturity.
-- Futures exchanges and clearing houses reduce default risk.`,
-
-    simpleExplanation: `Both contracts allow parties to fix a price today for a transaction that will happen later.
+- Forward contracts are generally settled at maturity.`,
+    simpleExplanation: `Both contracts allow two parties to fix a price today for a transaction that will happen later.
 
 A forward is privately negotiated. A futures contract is standardised and traded through an exchange.`,
+    example: `An importer expects to pay US$100,000 after three months.
 
-    example: `An importer expects to pay $100,000 after three months.
+To avoid the risk of the dollar becoming more expensive, the importer can enter a forward contract fixing the exchange rate today.`,
+    questions: `### Practice questions
 
-The importer is worried that the dollar may become more expensive. A forward contract can be used to fix the exchange rate today, reducing uncertainty about the future payment.`,
+1. Which contract is traded on an exchange?
+   **Answer:** A futures contract.
 
-    practiceQuestions: `### Practice questions
+2. Which contract is usually more customisable?
+   **Answer:** A forward contract.
 
-1. **Which contract is normally traded on an exchange?**  
-   **Answer:** A futures contract.  
-   **Explanation:** Futures are standardised exchange-traded contracts.
-
-2. **Which contract is generally more customisable?**  
-   **Answer:** A forward contract.  
-   **Explanation:** Its amount, maturity and other terms can be privately negotiated.
-
-3. **What is daily marking to market?**  
-   **Answer:** The daily calculation and settlement of futures gains and losses.  
-   **Explanation:** It reduces the buildup of unsettled credit exposure.`,
+3. What does daily marking to market mean?
+   **Answer:** Futures gains and losses are calculated and settled each trading day.`,
   },
-
   {
-    keywords: [
-      "porter five forces",
-      "porter's five forces",
-      "porters five forces",
-      "five forces",
-    ],
-
+    keywords: ["porter five forces", "porter's five forces", "five forces"],
     title: "Porter's Five Forces",
-
-    explanation: `Porter's Five Forces framework evaluates the competitive pressures that influence an industry's profitability.
+    explanation: `Porter's Five Forces framework evaluates the competitive pressures affecting an industry's profitability.
 
 The five forces are:
 
@@ -411,83 +249,50 @@ The five forces are:
 2. Threat of new entrants
 3. Bargaining power of buyers
 4. Bargaining power of suppliers
-5. Threat of substitute products or services
+5. Threat of substitute products
 
-A strong competitive force usually increases costs, reduces pricing power or places pressure on industry profitability.`,
+A strong force usually puts pressure on prices, costs or profitability.`,
+    simpleExplanation: `The framework examines five groups that can make it easier or harder for a company to earn profits: competitors, new firms, customers, suppliers and substitute products.`,
+    example: `In the airline industry, rivalry is high because several airlines compete on price. Buyers can compare fares easily, and alternatives such as trains may act as substitutes on shorter routes.`,
+    questions: `### Practice questions
 
-    simpleExplanation: `The framework examines five groups that can make it easier or harder for companies to earn profits:
+1. What does high buyer power usually do?
+   **Answer:** It puts pressure on companies to reduce prices or improve value.
 
-- Existing competitors
-- New companies
-- Customers
-- Suppliers
-- Substitute solutions`,
+2. Are substitute products necessarily direct competitors?
+   **Answer:** No. They satisfy a similar customer need through a different solution.
 
-    example: `In the airline industry, rivalry is often high because multiple airlines compete on fares.
-
-Customers can compare prices easily, while trains or buses may act as substitutes for shorter journeys. High aircraft and fuel costs may also affect supplier power and entry barriers.`,
-
-    practiceQuestions: `### Practice questions
-
-1. **What does high buyer power usually do?**  
-   **Answer:** It pressures companies to lower prices or provide greater value.  
-   **Explanation:** Powerful customers can negotiate or switch easily.
-
-2. **Must a substitute be a direct competitor?**  
-   **Answer:** No.  
-   **Explanation:** A substitute can satisfy the same need through a different solution.
-
-3. **Name one barrier to entry.**  
-   **Answer:** High capital requirements, regulation, brand loyalty or economies of scale.  
-   **Explanation:** These factors make market entry more difficult.`,
+3. What may create a barrier to entry?
+   **Answer:** High capital requirements, regulation, brand loyalty or economies of scale.`,
   },
-
   {
-    keywords: [
-      "cross sectional",
-      "cross-sectional",
-      "panel data",
-      "time series",
-      "types of data",
-    ],
-
-    title: "Cross-Sectional, Time-Series and Panel Data",
-
+    keywords: ["cross sectional", "cross-sectional", "panel data", "time series"],
+    title: "Types of Data",
     explanation: `### Cross-sectional data
 
-Cross-sectional data contains observations about multiple individuals, companies or regions at one point in time.
+Cross-sectional data contains observations on many individuals, companies or regions at one point in time.
 
 ### Time-series data
 
-Time-series data follows one variable or entity across multiple time periods.
+Time-series data tracks one variable or entity over several time periods.
 
 ### Panel data
 
-Panel data follows multiple individuals or entities across multiple time periods. It therefore combines cross-sectional and time-series dimensions.`,
+Panel data tracks multiple individuals or entities over multiple time periods. It therefore combines cross-sectional and time-series dimensions.`,
+    simpleExplanation: `Cross-sectional data compares many subjects at one time. Time-series data follows one subject over time. Panel data follows many subjects over time.`,
+    example: `- Salaries of 100 employees in 2026: cross-sectional data
+- India's GDP from 2010 to 2026: time-series data
+- Profits of 50 companies from 2020 to 2026: panel data`,
+    questions: `### Practice questions
 
-    simpleExplanation: `Cross-sectional data compares many subjects at one time.
+1. Data for 200 firms in a single year is what type?
+   **Answer:** Cross-sectional data.
 
-Time-series data follows one subject or variable over time.
+2. Monthly inflation for ten years is what type?
+   **Answer:** Time-series data.
 
-Panel data follows many subjects over time.`,
-
-    example: `- Salaries of 100 employees in 2026: **cross-sectional data**
-- Annual US GDP from 2010 to 2026: **time-series data**
-- Profits of 50 companies from 2020 to 2026: **panel data**`,
-
-    practiceQuestions: `### Practice questions
-
-1. **Data for 200 firms in one year is what type?**  
-   **Answer:** Cross-sectional data.  
-   **Explanation:** It compares many entities at one point in time.
-
-2. **Monthly inflation for ten years is what type?**  
-   **Answer:** Time-series data.  
-   **Explanation:** It follows one variable over multiple periods.
-
-3. **Annual profitability of 100 firms for five years is what type?**  
-   **Answer:** Panel data.  
-   **Explanation:** It follows several firms over several periods.`,
+3. Annual profitability of 100 firms for five years is what type?
+   **Answer:** Panel data.`,
   },
 ];
 
@@ -499,16 +304,12 @@ function normaliseText(value: string): string {
     .trim();
 }
 
-function findDemoTopic(
-  message: string
-): DemoTopic | undefined {
+function findDemoTopic(message: string): DemoTopic | undefined {
   const normalisedMessage = normaliseText(message);
 
   return DEMO_TOPICS.find((topic) =>
     topic.keywords.some((keyword) =>
-      normalisedMessage.includes(
-        normaliseText(keyword)
-      )
+      normalisedMessage.includes(normaliseText(keyword))
     )
   );
 }
@@ -531,62 +332,56 @@ function createGenericDemoResponse(
 
 Based on your question about **${question}**:
 
-1. Define the central concept in your own words.
-2. Provide one practical or numerical example.
-3. Explain why the concept is important.
+1. Define the main concept in your own words.
+2. Give one practical or numerical example.
+3. Explain why the concept is important in the subject.
 
 ### Suggested approach
 
-Begin with the definition, identify the major components and connect the concept to a practical application.
+Start with the definition, identify the main components, and then connect the concept to a real-world application.
 
-> **Built-in response:** EduMind's live AI provider is temporarily unavailable, so these are structured revision questions rather than a live model-generated answer.`;
+> **Demo mode:** EduMind's live AI provider is temporarily unavailable, so these are structured revision prompts rather than a generated model response.`;
   }
 
   if (mode === "follow_up") {
-    return `### Check your understanding
+    return `To check your understanding:
 
-How would you explain **${question}** to a classmate using one simple example?
+**How would you explain “${question}” to a classmate using one simple example?**
 
-> **Built-in response:** EduMind's live AI provider is temporarily unavailable.`;
+> **Demo mode:** The live AI provider is temporarily unavailable.`;
   }
 
   if (mode === "summarise") {
     return `### Quick summary
 
-Your question concerns **${question}**.
+Your question concerns **${question}**. Focus on three elements while revising:
 
-Focus on:
+1. The meaning or definition
+2. The mechanism or formula
+3. A practical example or application
 
-1. The definition
-2. The main mechanism or formula
-3. One practical implication or application
-
-> **Built-in response:** A more detailed subject-specific answer will appear when the live AI provider is available.`;
+> **Demo mode:** A full subject-specific response will appear when the live AI provider is available.`;
   }
 
-  return `### Understanding the concept
+  return `### Let's understand the concept
 
 You asked about:
 
 **${question}**
 
-A useful learning structure is:
+A useful way to learn this topic is to break it into four parts:
 
 1. **Definition:** What the concept means
-2. **Components:** Its important terms or stages
-3. **Mechanism:** How it works
-4. **Application:** Where it is used
-5. **Example:** A short practical illustration
+2. **Components:** The important terms, variables or stages
+3. **Application:** Where the concept is used
+4. **Example:** A simple practical or numerical illustration
 
-Start by writing a two-sentence definition, followed by one example from your course material.
+Try writing a two-sentence definition first, followed by one example from your notes. This helps identify the exact part that needs clarification.
 
-> **Built-in response:** EduMind's live AI provider is temporarily unavailable. This response keeps the tutor functional without displaying a technical provider error.`;
+> **Demo mode:** EduMind's live AI provider is temporarily unavailable. This structured response keeps the tutor functional without exposing a technical API error.`;
 }
 
-function createDemoResponse(
-  message: string,
-  mode: string
-): string {
+function createDemoResponse(message: string, mode: string): string {
   const topic = findDemoTopic(message);
 
   if (!topic) {
@@ -607,7 +402,7 @@ function createDemoResponse(
       break;
 
     case "practice_questions":
-      content = topic.practiceQuestions;
+      content = topic.questions;
       break;
 
     case "summarise":
@@ -615,11 +410,11 @@ function createDemoResponse(
       break;
 
     case "follow_up":
-      content = `${topic.simpleExplanation}
+      content = `### Check your understanding
 
-### Check your understanding
+${topic.simpleExplanation}
 
-Can you explain ${topic.title.toLowerCase()} using one example from your subject?`;
+**Follow-up question:** Can you explain ${topic.title.toLowerCase()} using an example from your subject?`;
       break;
 
     case "advanced":
@@ -634,109 +429,46 @@ Can you explain ${topic.title.toLowerCase()} using one example from your subject
 
 ${content}
 
-> **Built-in response:** This answer came from EduMind's internal academic fallback because the live AI provider was temporarily unavailable.`;
+> **Demo mode:** This answer was generated from EduMind's built-in academic knowledge because the live AI provider is currently unavailable.`;
 }
 
-function getReadableProviderError(error: unknown): string {
+function readableError(error: unknown): string {
   const message =
-    error instanceof Error
-      ? error.message
-      : "Unknown AI provider error";
+    error instanceof Error ? error.message : "Unknown AI error";
 
-  if (/timeout|timed out|aborted/i.test(message)) {
-    return "The AI provider took too long to answer.";
+  if (/timeout|aborted/i.test(message)) {
+    return "The AI model took too long to answer.";
   }
 
-  if (
-    /401|403|authentication|authorization|api key|permission/i.test(
-      message
-    )
-  ) {
+  if (/401|authentication|authorization|api key/i.test(message)) {
     return "The AI provider could not authenticate the request.";
   }
 
-  if (
-    /429|quota|rate limit|resource exhausted|insufficient_quota/i.test(
-      message
-    )
-  ) {
-    return "The AI provider's quota or rate limit was reached.";
+  if (/429|quota|rate limit|insufficient_quota/i.test(message)) {
+    return "The AI provider's free quota or rate limit was reached.";
   }
 
-  if (
-    /404|model not found|unknown model/i.test(message)
-  ) {
-    return "The configured AI model could not be found.";
-  }
-
-  if (
-    /fetch failed|connect|econnrefused|network/i.test(
-      message
-    )
-  ) {
+  if (/fetch failed|connect|ECONNREFUSED/i.test(message)) {
     return "The AI provider is currently unreachable.";
   }
 
-  return message.slice(0, 300);
+  return message;
 }
 
 function createPlainTextResponse(
   content: string,
   provider: string,
-  isDemoResponse: boolean,
-  model?: string
+  isDemoResponse: boolean
 ): Response {
-  const headers = new Headers({
-    "Content-Type": "text/plain; charset=utf-8",
-    "Cache-Control":
-      "no-cache, no-store, must-revalidate",
-    "X-AI-Provider": provider,
-    "X-AI-Demo": String(isDemoResponse),
-  });
-
-  if (model) {
-    headers.set("X-AI-Model", model);
-  }
-
   return new Response(content, {
     status: 200,
-    headers,
-  });
-}
-
-function createJsonSuccessResponse(
-  data: TutorSuccessData
-) {
-  return NextResponse.json<
-    ApiResponse<TutorSuccessData>
-  >(
-    {
-      success: true,
-      data,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      "X-AI-Provider": provider,
+      "X-AI-Demo": String(isDemoResponse),
     },
-    {
-      status: 200,
-      headers: {
-        "Cache-Control":
-          "no-cache, no-store, must-revalidate",
-        "X-AI-Provider": data.provider,
-        "X-AI-Demo": String(data.isDemoResponse),
-        "X-AI-Model": data.model,
-      },
-    }
-  );
-}
-
-function wantsPlainTextResponse(
-  request: Request
-): boolean {
-  const accept =
-    request.headers.get("accept")?.toLowerCase() ?? "";
-
-  return (
-    accept.includes("text/plain") &&
-    !accept.includes("application/json")
-  );
+  });
 }
 
 export async function POST(request: Request) {
@@ -751,218 +483,169 @@ export async function POST(request: Request) {
           code: "UNAUTHENTICATED",
         },
       },
-      {
-        status: 401,
-      }
+      { status: 401 }
     );
   }
 
-  const rateLimit = checkRateLimit(
-    `ai-tutor:${session.id}`
-  );
+  const rate = checkRateLimit(`ai-tutor:${session.id}`);
 
-  if (!rateLimit.allowed) {
+  if (!rate.allowed) {
     return NextResponse.json<ApiResponse<never>>(
       {
         success: false,
         error: {
-          message:
-            "You have sent too many tutor requests. Please wait briefly and try again.",
+          message: "Rate limit exceeded. Please try again later.",
           code: "RATE_LIMITED",
         },
       },
-      {
-        status: 429,
-      }
+      { status: 429 }
     );
   }
 
-  const body: unknown = await request
-    .json()
-    .catch(() => null);
+  const body = await request.json().catch(() => null);
+  const parsed = aiTutorMessageSchema.safeParse(body);
 
-  const parsedRequest =
-    aiTutorMessageSchema.safeParse(body);
-
-  if (!parsedRequest.success) {
+  if (!parsed.success) {
     return NextResponse.json<ApiResponse<never>>(
       {
         success: false,
         error: {
-          message:
-            "The tutor request is invalid. Enter a question and try again.",
+          message: "Invalid tutor request",
           code: "VALIDATION_ERROR",
         },
       },
-      {
-        status: 400,
-      }
+      { status: 400 }
     );
   }
 
-  const {
-    message,
-    mode = "explain",
-    responseLanguage = "en",
-  } = parsedRequest.data;
+  const { message, mode, responseLanguage } = parsed.data;
 
-  const plainTextRequested =
-    wantsPlainTextResponse(request);
+  const wantsStream =
+    request.headers.get("accept")?.includes("text/plain") ?? false;
 
+  /*
+   * Set AI_DEMO_MODE=true in Vercel whenever you want EduMind to
+   * use built-in responses without attempting an external API request.
+   */
   const forceDemoMode =
-    process.env.AI_DEMO_MODE
-      ?.trim()
-      .toLowerCase() === "true";
+    process.env.AI_DEMO_MODE?.trim().toLowerCase() === "true";
 
   if (forceDemoMode) {
-    const demoContent = createDemoResponse(
-      message,
-      mode
-    );
+    const demoContent = createDemoResponse(message, mode);
 
-    if (plainTextRequested) {
+    if (wantsStream) {
       return createPlainTextResponse(
         demoContent,
         "edumind-demo",
-        true,
-        "edumind-built-in-demo"
+        true
       );
     }
 
-    return createJsonSuccessResponse({
-      content: demoContent,
-      isDemoResponse: true,
-      model: "edumind-built-in-demo",
-      provider: "edumind-demo",
+    return NextResponse.json({
+      success: true,
+      data: {
+        content: demoContent,
+        isDemoResponse: true,
+        model: "edumind-built-in-demo",
+        provider: "edumind-demo",
+      },
     });
   }
 
   try {
     const provider = await getAiProvider();
 
-    const modeInstruction =
+    const modeInstruction: string =
       MODE_INSTRUCTIONS[mode] ??
-      MODE_INSTRUCTIONS.explain;
+      MODE_INSTRUCTIONS.explain ??
+      "Explain the concept clearly and concisely.";
 
     const languageInstruction =
       responseLanguage === "en"
         ? "Respond in English."
-        : `Respond using language code "${responseLanguage}".`;
+        : `Respond using language code ${responseLanguage}.`;
 
     const aiRequest = {
       systemPrompt: `${SYSTEM_PROMPT}
 
-Specific response instructions:
-${modeInstruction.trim()}
-
-Language:
+${modeInstruction}
 ${languageInstruction}`,
-
       messages: [
         {
           role: "user" as const,
           content: message,
         },
       ],
-
-      maxTokens:
-        mode === "practice_questions"
-          ? 700
-          : mode === "advanced"
-            ? 650
-            : 500,
-
+      maxTokens: mode === "practice_questions" ? 550 : 350,
       temperature: 0.2,
       task: "tutor" as const,
     };
 
-    if (
-      plainTextRequested &&
-      typeof provider.stream === "function"
-    ) {
+    if (wantsStream && provider.stream) {
       try {
         const stream = await provider.stream(aiRequest);
 
         return new Response(stream, {
           status: 200,
           headers: {
-            "Content-Type":
-              "text/plain; charset=utf-8",
-            "Cache-Control":
-              "no-cache, no-store, no-transform",
-            "X-Content-Type-Options": "nosniff",
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-cache, no-transform",
             "X-AI-Provider": provider.name,
             "X-AI-Demo": "false",
           },
         });
       } catch (streamError) {
-        console.error(
-          "AI Tutor streaming failed:",
-          getReadableProviderError(streamError)
-        );
+        console.error("AI tutor streaming error:", streamError);
 
-        const demoContent = createDemoResponse(
-          message,
-          mode
-        );
+        const demoContent = createDemoResponse(message, mode);
 
         return createPlainTextResponse(
           demoContent,
           "edumind-demo-fallback",
-          true,
-          "edumind-built-in-demo"
+          true
         );
       }
     }
 
     const result = await provider.complete(aiRequest);
 
-    const content = result.content?.trim();
-
-    if (!content) {
-      throw new Error(
-        "The AI provider returned an empty response."
-      );
-    }
-
-    return createJsonSuccessResponse({
-      content,
-      isDemoResponse:
-        result.isDemoResponse ?? false,
-      model:
-        result.model ??
-        process.env.LLM_MODEL ??
-        "configured-model",
-      provider: provider.name,
+    return NextResponse.json({
+      success: true,
+      data: {
+        content: result.content,
+        isDemoResponse: result.isDemoResponse,
+        model: result.model,
+        provider: provider.name,
+      },
     });
-  } catch (providerError) {
-    const providerStatus =
-      getReadableProviderError(providerError);
-
-    console.error("AI Tutor provider failure:", {
-      providerStatus,
+  } catch (error) {
+    console.error("AI tutor provider error:", {
+      reason: readableError(error),
     });
 
-    const demoContent = createDemoResponse(
-      message,
-      mode
-    );
+    const demoContent = createDemoResponse(message, mode);
 
-    if (plainTextRequested) {
+    /*
+     * Always return HTTP 200 for a successful fallback response.
+     * The student should not see technical 401, 429 or 502 errors.
+     */
+    if (wantsStream) {
       return createPlainTextResponse(
         demoContent,
         "edumind-demo-fallback",
-        true,
-        "edumind-built-in-demo"
+        true
       );
     }
 
-    return createJsonSuccessResponse({
-      content: demoContent,
-      isDemoResponse: true,
-      model: "edumind-built-in-demo",
-      provider: "edumind-demo-fallback",
-      providerStatus,
+    return NextResponse.json({
+      success: true,
+      data: {
+        content: demoContent,
+        isDemoResponse: true,
+        model: "edumind-built-in-demo",
+        provider: "edumind-demo-fallback",
+        providerStatus: readableError(error),
+      },
     });
   }
 }
