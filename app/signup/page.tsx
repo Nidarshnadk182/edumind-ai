@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Brain,
-  Eye,
-  EyeOff,
+  GraduationCap,
+  School,
+  Building2,
   Loader2,
   CheckCircle2,
 } from 'lucide-react';
@@ -17,76 +17,167 @@ import {
   isSupabaseConfigured,
 } from '@/lib/database/supabase-browser';
 
-export default function SignupPage() {
+type Role = 'student' | 'teacher' | 'institution';
+
+const ROLE_OPTIONS: Array<{
+  role: Role;
+  title: string;
+  description: string;
+  icon: React.ComponentType<{
+    className?: string;
+  }>;
+}> = [
+  {
+    role: 'student',
+    title: 'Student',
+    description:
+      'Learn with the AI Tutor, take practice tests, track scores and receive personalised study plans.',
+    icon: GraduationCap,
+  },
+  {
+    role: 'teacher',
+    title: 'Teacher',
+    description:
+      'Manage learning activities, review student performance and support students with AI-assisted insights.',
+    icon: School,
+  },
+  {
+    role: 'institution',
+    title: 'Institution',
+    description:
+      'Manage users, monitor academic performance and view institution-level learning analytics.',
+    icon: Building2,
+  },
+];
+
+export default function RoleOnboardingPage() {
   const router = useRouter();
 
-  const [fullName, setFullName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] =
-    useState('');
+  const [selectedRole, setSelectedRole] =
+    useState<Role | null>(null);
 
-  const [showPassword, setShowPassword] =
+  const [loading, setLoading] =
     useState(false);
 
-  const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] =
+    useState(true);
 
   const [error, setError] =
     useState<string | null>(null);
 
-  const [successMessage, setSuccessMessage] =
-    useState<string | null>(null);
+  const [success, setSuccess] =
+    useState(false);
 
-  const demoMode = !isSupabaseConfigured();
+  const demoMode =
+    !isSupabaseConfigured();
 
-  function validateForm(): string | null {
-    const cleanName = fullName.trim();
-    const cleanEmail = email.trim();
+  useEffect(() => {
+    async function checkSession() {
+      if (demoMode) {
+        setCheckingSession(false);
+        return;
+      }
 
-    if (!cleanName) {
-      return 'Please enter your full name.';
+      try {
+        const supabase =
+          createSupabaseBrowserClient();
+
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError || !user) {
+          router.replace('/login');
+          return;
+        }
+
+        const {
+          data: profile,
+          error: profileError,
+        } = await supabase
+          .from('profiles')
+          .select(
+            'role, onboarding_completed'
+          )
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.error(
+            'Profile lookup error:',
+            profileError
+          );
+
+          setError(
+            'We could not load your profile. Please try again.'
+          );
+
+          setCheckingSession(false);
+          return;
+        }
+
+        /*
+         * If onboarding has already been completed,
+         * the user should not select their role again.
+         */
+        if (
+          profile?.onboarding_completed &&
+          profile?.role
+        ) {
+          router.replace(
+            `/${profile.role}/dashboard`
+          );
+
+          return;
+        }
+      } catch (sessionError) {
+        console.error(
+          'Session check error:',
+          sessionError
+        );
+
+        setError(
+          'We could not verify your account. Please log in again.'
+        );
+      } finally {
+        setCheckingSession(false);
+      }
     }
 
-    if (!cleanEmail) {
-      return 'Please enter your email address.';
-    }
+    void checkSession();
+  }, [demoMode, router]);
 
-    if (!cleanEmail.includes('@')) {
-      return 'Please enter a valid email address.';
-    }
-
-    if (!password) {
-      return 'Please enter a password.';
-    }
-
-    if (password.length < 8) {
-      return 'Your password must contain at least 8 characters.';
-    }
-
-    if (password !== confirmPassword) {
-      return 'The passwords do not match.';
-    }
-
-    return null;
-  }
-
-  async function handleSubmit(
-    event: React.FormEvent<HTMLFormElement>
-  ) {
-    event.preventDefault();
-
-    setError(null);
-    setSuccessMessage(null);
-
-    const validationError = validateForm();
-
-    if (validationError) {
-      setError(validationError);
+  async function handleContinue() {
+    if (!selectedRole) {
+      setError(
+        'Please select how you will use EduMind AI.'
+      );
       return;
     }
 
+    setError(null);
+    setSuccess(false);
+
     if (demoMode) {
-      router.push('/signup/onboarding');
+      if (selectedRole === 'student') {
+        router.push(
+          '/signup/onboarding/student'
+        );
+        return;
+      }
+
+      if (selectedRole === 'teacher') {
+        router.push(
+          '/signup/onboarding/teacher'
+        );
+        return;
+      }
+
+      router.push(
+        '/institution/dashboard'
+      );
+
       return;
     }
 
@@ -96,341 +187,258 @@ export default function SignupPage() {
       const supabase =
         createSupabaseBrowserClient();
 
-      const cleanEmail = email
-        .trim()
-        .toLowerCase();
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
-      const cleanName = fullName.trim();
+      if (userError || !user) {
+        setError(
+          'Your session has expired. Please log in again.'
+        );
 
-      const emailRedirectTo =
-        typeof window !== 'undefined'
-          ? `${window.location.origin}/auth/callback?next=/signup/onboarding`
-          : undefined;
+        router.replace('/login');
+        return;
+      }
+
+      /*
+       * Save the selected role.
+       *
+       * onboarding_completed remains FALSE for students
+       * and teachers because they still have another
+       * profile setup page to complete.
+       *
+       * Institution onboarding is currently completed
+       * here because the existing project does not yet
+       * contain a separate institution setup page.
+       */
+      const onboardingCompleted =
+        selectedRole === 'institution';
 
       const {
-        data,
-        error: signUpError,
-      } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          emailRedirectTo,
-          data: {
-            full_name: cleanName,
-          },
-        },
-      });
+        error: updateError,
+      } = await supabase
+        .from('profiles')
+        .update({
+          role: selectedRole,
+          onboarding_completed:
+            onboardingCompleted,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', user.id);
 
-      if (signUpError) {
-        if (
-          /already registered|already exists/i.test(
-            signUpError.message
-          )
-        ) {
-          setError(
-            'An account already exists with this email. Please log in instead.'
-          );
-          return;
-        }
-
-        setError(signUpError.message);
-        return;
-      }
-
-      if (!data.user) {
-        setError(
-          'Your account could not be created. Please try again.'
+      if (updateError) {
+        console.error(
+          'Role update error:',
+          updateError
         );
+
+        setError(
+          'We could not save your role. Please try again.'
+        );
+
+        return;
+      }
+
+      setSuccess(true);
+
+      if (selectedRole === 'student') {
+        router.replace(
+          '/signup/onboarding/student'
+        );
+
+        return;
+      }
+
+      if (selectedRole === 'teacher') {
+        router.replace(
+          '/signup/onboarding/teacher'
+        );
+
         return;
       }
 
       /*
-       * Your Supabase database already has a trigger that
-       * automatically creates a row inside profiles when a
-       * new auth user is created.
-       *
-       * Therefore we DO NOT manually insert into profiles here.
+       * Institution profile setup will be built as
+       * its own step next.
        */
-
-      if (data.session) {
-        /*
-         * Email confirmation is disabled or Supabase has created
-         * the session immediately.
-         *
-         * Continue to role selection.
-         */
-        router.replace('/signup/onboarding');
-        router.refresh();
-        return;
-      }
-
-      /*
-       * If email confirmation is enabled, Supabase creates the
-       * account but does not create a logged-in session until the
-       * email link is clicked.
-       */
-      setSuccessMessage(
-        'Your account has been created. Please check your email and confirm your account. After confirmation, you will continue to EduMind AI setup.'
+      router.replace(
+        '/institution/dashboard'
       );
 
-      setPassword('');
-      setConfirmPassword('');
-    } catch (authError) {
+      router.refresh();
+    } catch (onboardingError) {
       console.error(
-        'Signup error:',
-        authError
+        'Role onboarding error:',
+        onboardingError
       );
 
       setError(
-        'Something went wrong while creating your account. Please try again.'
+        'Something went wrong while saving your account type. Please try again.'
       );
     } finally {
       setLoading(false);
     }
   }
 
+  if (checkingSession) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-canvas-light">
+        <div className="flex flex-col items-center gap-3 text-navy-600">
+          <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
+
+          <p className="text-sm">
+            Preparing your account...
+          </p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-canvas-light px-6 py-12">
-      <div className="mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-md items-center justify-center">
+      <div className="mx-auto w-full max-w-3xl">
 
-        <div className="w-full">
+        <div className="mb-8 flex items-center justify-center gap-2 font-display font-semibold text-navy-900">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-600 text-white">
+            <Brain className="h-5 w-5" />
+          </span>
 
-          <Link
-            href="/"
-            className="mb-8 flex items-center justify-center gap-2 font-display font-semibold text-navy-900"
-          >
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-600 text-white">
-              <Brain className="h-5 w-5" />
-            </span>
+          <span className="text-lg">
+            EduMind AI
+          </span>
+        </div>
 
-            <span className="text-lg">
-              EduMind AI
-            </span>
-          </Link>
+        <section className="card p-7 md:p-9">
 
-          <section className="card p-7">
+          <div className="mx-auto mb-8 max-w-xl text-center">
 
-            <div className="mb-6">
-              <h1 className="font-display text-2xl font-semibold text-navy-900">
-                Create your account
-              </h1>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.15em] text-purple-600">
+              Account setup
+            </p>
 
-              <p className="mt-1.5 text-sm leading-6 text-navy-500">
-                Sign up first. You&apos;ll choose whether
-                you&apos;re a student, teacher, or
-                institution afterwards.
-              </p>
-            </div>
+            <h1 className="font-display text-2xl font-semibold text-navy-900 md:text-3xl">
+              How will you use EduMind AI?
+            </h1>
 
-            {demoMode && (
-              <div className="mb-5 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Supabase is not configured, so the app is
-                currently running in demo mode.
-              </div>
-            )}
+            <p className="mt-3 text-sm leading-6 text-navy-500">
+              Choose your role so we can personalise
+              your dashboard and learning experience.
+            </p>
 
-            {error && (
-              <div
-                role="alert"
-                className="mb-5 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"
-              >
-                {error}
-              </div>
-            )}
+          </div>
 
-            {successMessage && (
-              <div
-                role="status"
-                className="mb-5 flex items-start gap-3 rounded-xl bg-green-50 px-4 py-3 text-sm text-green-800"
-              >
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-
-                <span>
-                  {successMessage}
-                </span>
-              </div>
-            )}
-
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-4"
+          {error && (
+            <div
+              role="alert"
+              className="mb-6 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"
             >
-
-              <div>
-                <label
-                  htmlFor="fullName"
-                  className="mb-1.5 block text-sm font-medium text-navy-700"
-                >
-                  Full name
-                </label>
-
-                <input
-                  id="fullName"
-                  name="fullName"
-                  type="text"
-                  autoComplete="name"
-                  required
-                  value={fullName}
-                  onChange={(event) =>
-                    setFullName(
-                      event.target.value
-                    )
-                  }
-                  placeholder="Your full name"
-                  disabled={loading}
-                  className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="email"
-                  className="mb-1.5 block text-sm font-medium text-navy-700"
-                >
-                  Email address
-                </label>
-
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  required
-                  value={email}
-                  onChange={(event) =>
-                    setEmail(
-                      event.target.value
-                    )
-                  }
-                  placeholder="you@example.com"
-                  disabled={loading}
-                  className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="password"
-                  className="mb-1.5 block text-sm font-medium text-navy-700"
-                >
-                  Password
-                </label>
-
-                <div className="relative">
-                  <input
-                    id="password"
-                    name="password"
-                    type={
-                      showPassword
-                        ? 'text'
-                        : 'password'
-                    }
-                    autoComplete="new-password"
-                    required
-                    minLength={8}
-                    value={password}
-                    onChange={(event) =>
-                      setPassword(
-                        event.target.value
-                      )
-                    }
-                    placeholder="At least 8 characters"
-                    disabled={loading}
-                    className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 pr-11 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
-                  />
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setShowPassword(
-                        (current) =>
-                          !current
-                      )
-                    }
-                    className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-navy-400 hover:text-navy-700"
-                    aria-label={
-                      showPassword
-                        ? 'Hide password'
-                        : 'Show password'
-                    }
-                  >
-                    {showPassword ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="confirmPassword"
-                  className="mb-1.5 block text-sm font-medium text-navy-700"
-                >
-                  Confirm password
-                </label>
-
-                <input
-                  id="confirmPassword"
-                  name="confirmPassword"
-                  type={
-                    showPassword
-                      ? 'text'
-                      : 'password'
-                  }
-                  autoComplete="new-password"
-                  required
-                  minLength={8}
-                  value={confirmPassword}
-                  onChange={(event) =>
-                    setConfirmPassword(
-                      event.target.value
-                    )
-                  }
-                  placeholder="Enter your password again"
-                  disabled={loading}
-                  className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
-                />
-              </div>
-
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={loading}
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Creating account...
-                  </>
-                ) : (
-                  'Create account'
-                )}
-              </Button>
-            </form>
-
-            <div className="mt-6 border-t border-navy-100 pt-5">
-              <p className="text-center text-sm text-navy-500">
-                Already have an account?{' '}
-
-                <Link
-                  href="/login"
-                  className="font-medium text-purple-600 hover:text-purple-700"
-                >
-                  Log in
-                </Link>
-              </p>
+              {error}
             </div>
+          )}
 
-          </section>
+          {success && (
+            <div className="mb-6 flex items-center gap-2 rounded-xl bg-green-50 px-4 py-3 text-sm text-green-800">
+              <CheckCircle2 className="h-4 w-4" />
 
-          <p className="mt-6 text-center text-xs leading-5 text-navy-400">
-            By creating an account, you agree to
-            EduMind AI&apos;s terms and privacy policy.
+              Role saved successfully.
+            </div>
+          )}
+
+          <div className="grid gap-4 md:grid-cols-3">
+
+            {ROLE_OPTIONS.map(
+              ({
+                role,
+                title,
+                description,
+                icon: Icon,
+              }) => {
+                const selected =
+                  selectedRole === role;
+
+                return (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => {
+                      setSelectedRole(
+                        role
+                      );
+
+                      setError(null);
+                    }}
+                    disabled={loading}
+                    className={`group relative rounded-2xl border p-5 text-left transition-all ${
+                      selected
+                        ? 'border-purple-500 bg-purple-50 shadow-sm ring-2 ring-purple-100'
+                        : 'border-navy-200 bg-white hover:border-purple-300 hover:shadow-sm'
+                    }`}
+                  >
+                    {selected && (
+                      <span className="absolute right-4 top-4 flex h-5 w-5 items-center justify-center rounded-full bg-purple-600 text-white">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+
+                    <div
+                      className={`mb-4 flex h-11 w-11 items-center justify-center rounded-xl ${
+                        selected
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-purple-50 text-purple-600'
+                      }`}
+                    >
+                      <Icon className="h-5 w-5" />
+                    </div>
+
+                    <h2 className="font-display text-base font-semibold text-navy-900">
+                      {title}
+                    </h2>
+
+                    <p className="mt-2 text-sm leading-6 text-navy-500">
+                      {description}
+                    </p>
+                  </button>
+                );
+              }
+            )}
+
+          </div>
+
+          <div className="mt-8">
+
+            <Button
+              type="button"
+              className="w-full"
+              disabled={
+                !selectedRole ||
+                loading
+              }
+              onClick={
+                handleContinue
+              }
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+
+                  Saving...
+                </>
+              ) : (
+                'Continue'
+              )}
+            </Button>
+
+          </div>
+
+          <p className="mt-5 text-center text-xs leading-5 text-navy-400">
+            Your role controls which tools and
+            dashboards are available to you.
           </p>
 
-        </div>
+        </section>
+
       </div>
     </main>
   );
