@@ -3,135 +3,435 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Brain, GraduationCap, Presentation, Heart, Building2, Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
-import { isSupabaseConfigured, createSupabaseBrowserClient } from '@/lib/database/supabase-browser';
-import type { UserRole } from '@/types/database';
+import {
+  Brain,
+  Eye,
+  EyeOff,
+  Loader2,
+  CheckCircle2,
+} from 'lucide-react';
 
-const roles: { value: UserRole; label: string; icon: typeof GraduationCap }[] = [
-  { value: 'student', label: 'Student', icon: GraduationCap },
-  { value: 'teacher', label: 'Teacher', icon: Presentation },
-  { value: 'parent', label: 'Parent', icon: Heart },
-  { value: 'institution', label: 'Institution admin', icon: Building2 },
-];
+import { Button } from '@/components/ui/button';
+import {
+  createSupabaseBrowserClient,
+  isSupabaseConfigured,
+} from '@/lib/database/supabase-browser';
 
 export default function SignupPage() {
   const router = useRouter();
-  const [role, setRole] = useState<UserRole>('student');
+
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] =
+    useState('');
+
+  const [showPassword, setShowPassword] =
+    useState(false);
+
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [successMessage, setSuccessMessage] =
+    useState<string | null>(null);
+
   const demoMode = !isSupabaseConfigured();
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  function validateForm(): string | null {
+    const cleanName = fullName.trim();
+    const cleanEmail = email.trim();
+
+    if (!cleanName) {
+      return 'Please enter your full name.';
+    }
+
+    if (!cleanEmail) {
+      return 'Please enter your email address.';
+    }
+
+    if (!cleanEmail.includes('@')) {
+      return 'Please enter a valid email address.';
+    }
+
+    if (!password) {
+      return 'Please enter a password.';
+    }
+
+    if (password.length < 8) {
+      return 'Your password must contain at least 8 characters.';
+    }
+
+    if (password !== confirmPassword) {
+      return 'The passwords do not match.';
+    }
+
+    return null;
+  }
+
+  async function handleSubmit(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+
     setError(null);
+    setSuccessMessage(null);
+
+    const validationError = validateForm();
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
 
     if (demoMode) {
-      router.push(role === 'student' ? '/signup/onboarding/student' : `/${role}/dashboard`);
+      router.push('/signup/onboarding');
       return;
     }
 
     setLoading(true);
+
     try {
-      const supabase = createSupabaseBrowserClient();
-      const { data, error: signUpError } = await supabase.auth.signUp({ email, password });
-      if (signUpError || !data.user) {
-        setError(signUpError?.message ?? 'Could not create account.');
+      const supabase =
+        createSupabaseBrowserClient();
+
+      const cleanEmail = email
+        .trim()
+        .toLowerCase();
+
+      const cleanName = fullName.trim();
+
+      const emailRedirectTo =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/auth/callback?next=/signup/onboarding`
+          : undefined;
+
+      const {
+        data,
+        error: signUpError,
+      } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          emailRedirectTo,
+          data: {
+            full_name: cleanName,
+          },
+        },
+      });
+
+      if (signUpError) {
+        if (
+          /already registered|already exists/i.test(
+            signUpError.message
+          )
+        ) {
+          setError(
+            'An account already exists with this email. Please log in instead.'
+          );
+          return;
+        }
+
+        setError(signUpError.message);
         return;
       }
-      await supabase.from('profiles').insert({ id: data.user.id, role, full_name: fullName });
-      router.push(role === 'student' || role === 'teacher' ? `/signup/onboarding/${role}` : `/${role}/dashboard`);
+
+      if (!data.user) {
+        setError(
+          'Your account could not be created. Please try again.'
+        );
+        return;
+      }
+
+      /*
+       * Your Supabase database already has a trigger that
+       * automatically creates a row inside profiles when a
+       * new auth user is created.
+       *
+       * Therefore we DO NOT manually insert into profiles here.
+       */
+
+      if (data.session) {
+        /*
+         * Email confirmation is disabled or Supabase has created
+         * the session immediately.
+         *
+         * Continue to role selection.
+         */
+        router.replace('/signup/onboarding');
+        router.refresh();
+        return;
+      }
+
+      /*
+       * If email confirmation is enabled, Supabase creates the
+       * account but does not create a logged-in session until the
+       * email link is clicked.
+       */
+      setSuccessMessage(
+        'Your account has been created. Please check your email and confirm your account. After confirmation, you will continue to EduMind AI setup.'
+      );
+
+      setPassword('');
+      setConfirmPassword('');
+    } catch (authError) {
+      console.error(
+        'Signup error:',
+        authError
+      );
+
+      setError(
+        'Something went wrong while creating your account. Please try again.'
+      );
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-canvas-light px-6 py-12">
-      <div className="w-full max-w-md">
-        <Link href="/" className="flex items-center gap-2 justify-center font-display font-semibold text-navy-900 mb-8">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-600 text-white">
-            <Brain className="h-4.5 w-4.5" />
-          </span>
-          EduMind AI
-        </Link>
+    <main className="min-h-screen bg-canvas-light px-6 py-12">
+      <div className="mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-md items-center justify-center">
 
-        <div className="card p-7">
-          <h1 className="font-display text-xl font-semibold text-navy-900 mb-1">Create your account</h1>
-          <p className="text-sm text-navy-500 mb-6">Choose your role to get started.</p>
+        <div className="w-full">
 
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            {roles.map((r) => (
-              <button
-                key={r.value}
-                type="button"
-                onClick={() => setRole(r.value)}
-                className={cn(
-                  'flex flex-col items-center gap-2 rounded-xl border p-4 text-sm font-medium transition-colors',
-                  role === r.value
-                    ? 'border-purple-400 bg-purple-50 text-purple-700'
-                    : 'border-navy-200 text-navy-600 hover:border-navy-300'
-                )}
+          <Link
+            href="/"
+            className="mb-8 flex items-center justify-center gap-2 font-display font-semibold text-navy-900"
+          >
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-600 text-white">
+              <Brain className="h-5 w-5" />
+            </span>
+
+            <span className="text-lg">
+              EduMind AI
+            </span>
+          </Link>
+
+          <section className="card p-7">
+
+            <div className="mb-6">
+              <h1 className="font-display text-2xl font-semibold text-navy-900">
+                Create your account
+              </h1>
+
+              <p className="mt-1.5 text-sm leading-6 text-navy-500">
+                Sign up first. You&apos;ll choose whether
+                you&apos;re a student, teacher, or
+                institution afterwards.
+              </p>
+            </div>
+
+            {demoMode && (
+              <div className="mb-5 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Supabase is not configured, so the app is
+                currently running in demo mode.
+              </div>
+            )}
+
+            {error && (
+              <div
+                role="alert"
+                className="mb-5 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"
               >
-                <r.icon className="h-5 w-5" />
-                {r.label}
-              </button>
-            ))}
-          </div>
+                {error}
+              </div>
+            )}
 
-          {error && <div className="mb-5 rounded-xl bg-red-50 text-red-700 text-xs px-3 py-2.5">{error}</div>}
+            {successMessage && (
+              <div
+                role="status"
+                className="mb-5 flex items-start gap-3 rounded-xl bg-green-50 px-4 py-3 text-sm text-green-800"
+              >
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-navy-700 mb-1.5">Full name</label>
-              <input
-                required
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                placeholder="Your name"
-                className="w-full rounded-xl border border-navy-200 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-navy-700 mb-1.5">Email</label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@school.edu"
-                className="w-full rounded-xl border border-navy-200 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-navy-700 mb-1.5">Password</label>
-              <input
-                type="password"
-                required
-                minLength={8}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="At least 8 characters"
-                className="w-full rounded-xl border border-navy-200 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400"
-              />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Create account'}
-            </Button>
-          </form>
+                <span>
+                  {successMessage}
+                </span>
+              </div>
+            )}
 
-          <p className="text-center text-sm text-navy-500 mt-6">
-            Already have an account?{' '}
-            <Link href="/login" className="text-purple-600 font-medium">
-              Log in
-            </Link>
+            <form
+              onSubmit={handleSubmit}
+              className="space-y-4"
+            >
+
+              <div>
+                <label
+                  htmlFor="fullName"
+                  className="mb-1.5 block text-sm font-medium text-navy-700"
+                >
+                  Full name
+                </label>
+
+                <input
+                  id="fullName"
+                  name="fullName"
+                  type="text"
+                  autoComplete="name"
+                  required
+                  value={fullName}
+                  onChange={(event) =>
+                    setFullName(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Your full name"
+                  disabled={loading}
+                  className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="email"
+                  className="mb-1.5 block text-sm font-medium text-navy-700"
+                >
+                  Email address
+                </label>
+
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(event) =>
+                    setEmail(
+                      event.target.value
+                    )
+                  }
+                  placeholder="you@example.com"
+                  disabled={loading}
+                  className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="password"
+                  className="mb-1.5 block text-sm font-medium text-navy-700"
+                >
+                  Password
+                </label>
+
+                <div className="relative">
+                  <input
+                    id="password"
+                    name="password"
+                    type={
+                      showPassword
+                        ? 'text'
+                        : 'password'
+                    }
+                    autoComplete="new-password"
+                    required
+                    minLength={8}
+                    value={password}
+                    onChange={(event) =>
+                      setPassword(
+                        event.target.value
+                      )
+                    }
+                    placeholder="At least 8 characters"
+                    disabled={loading}
+                    className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 pr-11 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShowPassword(
+                        (current) =>
+                          !current
+                      )
+                    }
+                    className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-navy-400 hover:text-navy-700"
+                    aria-label={
+                      showPassword
+                        ? 'Hide password'
+                        : 'Show password'
+                    }
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="confirmPassword"
+                  className="mb-1.5 block text-sm font-medium text-navy-700"
+                >
+                  Confirm password
+                </label>
+
+                <input
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type={
+                    showPassword
+                      ? 'text'
+                      : 'password'
+                  }
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={(event) =>
+                    setConfirmPassword(
+                      event.target.value
+                    )
+                  }
+                  placeholder="Enter your password again"
+                  disabled={loading}
+                  className="w-full rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-sm text-navy-900 outline-none transition placeholder:text-navy-400 focus:border-purple-400 focus:ring-2 focus:ring-purple-200 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+              </div>
+
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={loading}
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Creating account...
+                  </>
+                ) : (
+                  'Create account'
+                )}
+              </Button>
+            </form>
+
+            <div className="mt-6 border-t border-navy-100 pt-5">
+              <p className="text-center text-sm text-navy-500">
+                Already have an account?{' '}
+
+                <Link
+                  href="/login"
+                  className="font-medium text-purple-600 hover:text-purple-700"
+                >
+                  Log in
+                </Link>
+              </p>
+            </div>
+
+          </section>
+
+          <p className="mt-6 text-center text-xs leading-5 text-navy-400">
+            By creating an account, you agree to
+            EduMind AI&apos;s terms and privacy policy.
           </p>
+
         </div>
       </div>
-    </div>
+    </main>
   );
 }
